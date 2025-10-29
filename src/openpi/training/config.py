@@ -17,6 +17,7 @@ import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
+import openpi.policies.c0_perturb_policy as c0_perturb_policy
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
@@ -452,6 +453,44 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+class LeRobotC0PerturbDataConfig(DataConfigFactory):
+    """
+    Config for training on C0Perturb dataset in LeRobot format.
+    """
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "camera_1",
+                        "observation/wrist_image": "camera_0",
+                        "observation/state": "robot_eef_pose",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+
+        delta_action_mask = _transforms.make_bool_mask(6, -1)
+        data_transforms = _transforms.Group(
+            inputs=[c0_perturb_policy.C0PerturbInputs(model_type=model_config.model_type, state_angle_to_radians=True), 
+            _transforms.DeltaActions(delta_action_mask),
+            ],
+            outputs=[c0_perturb_policy.C0PerturbOutputs(),
+            _transforms.AbsoluteActions(delta_action_mask),
+            ],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -506,7 +545,7 @@ class TrainConfig:
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
-    keep_period: int | None = 5000
+    keep_period: int | None = 1000
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -751,6 +790,35 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    
+    TrainConfig(
+        name="pi05_c0_perturb",
+        assets_base_dir="/home/dzhong/openpi/assets",
+        checkpoint_base_dir="/var/covariant/checkpoints/pi05",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotC0PerturbDataConfig(
+            repo_id="lab42/dual_perturb_c0_9_28_1_600_fixed",
+            base_config=DataConfig(
+                action_sequence_keys=("action",),
+            ),
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000,
+            peak_lr=2.5e-5,
+            decay_steps=30_000,
+            decay_lr=2.5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/var/covariant/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        save_interval=1000,
+        keep_period=1000,
+        num_train_steps=20_000,
+        ema_decay=None,
     ),
     #
     # Fine-tuning Aloha configs.

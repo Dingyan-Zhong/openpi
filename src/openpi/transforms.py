@@ -232,7 +232,8 @@ class AbsoluteActions(DataTransformFn):
     mask: Sequence[bool] | None
 
     def __call__(self, data: DataDict) -> DataDict:
-        if "actions" not in data or self.mask is None:
+        if "actions" not in data or self.mask is None or "state" not in data:
+            # No actions or no state (e.g. during inference), so this is a no-op.
             return data
 
         state, actions = data["state"], data["actions"]
@@ -243,6 +244,16 @@ class AbsoluteActions(DataTransformFn):
 
         return data
 
+@dataclasses.dataclass(frozen=True)
+class C0StateAngleToRadians(DataTransformFn):
+    """Converts state angles to radians."""
+    def __call__(self, data: DataDict) -> DataDict:
+        if "state" not in data:
+            return data
+        state = data["state"]
+        state[3:6] = np.deg2rad(state[3:6])
+        data["state"] = state
+        return data
 
 @dataclasses.dataclass(frozen=True)
 class TokenizePrompt(DataTransformFn):
