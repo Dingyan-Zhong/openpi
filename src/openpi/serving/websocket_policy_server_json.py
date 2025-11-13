@@ -1,13 +1,18 @@
 import asyncio
+import base64
 import http
+import io
 import json
 import logging
 import time
 import traceback
+from PIL import Image
 
+import numpy as np
 from openpi_client import base_policy as _base_policy
 import websockets.asyncio.server as _server
 import websockets.frames
+import websockets
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,11 @@ class WebsocketPolicyServerJson:
             try:
                 start_time = time.monotonic()
                 obs = json.loads(await websocket.recv())
+                for key in obs:
+                    if key.endswith("rgb") and isinstance(obs[key], str):
+                        obs[key] = _decode_image_to_array(obs[key])
+                        if obs[key].shape[0] == 3:
+                            obs[key] = np.transpose(obs[key], (1, 2, 0))  # C,H,W to H,W,C
 
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
@@ -65,14 +75,26 @@ class WebsocketPolicyServerJson:
                     # We can only record the last total time since we also want to include the send time.
                     action["server_timing"]["prev_total_ms"] = prev_total_time * 1000
 
-                await websocket.send(json.dump(action))
+                print("WebsocketPolicyServerJson action:", action["actions"])
+                payload = {
+                    "status": "success",
+                    "action": action["actions"].tolist(),
+                    "server_timing": action.get("server_timing", {}),
+                }
+                await websocket.send(json.dumps(payload))
                 prev_total_time = time.monotonic() - start_time
 
-            except websockets.ConnectionClosed:
+            except websockets.exceptions.ConnectionClosed:
                 logger.info(f"Connection from {websocket.remote_address} closed")
                 break
             except Exception:
-                await websocket.send(traceback.format_exc())
+                tb = traceback.format_exc()
+               # send structured error JSON so client can parse it
+                try:
+                    await websocket.send(json.dumps({"status": "error", "error": tb}))
+                except Exception:
+                    # if sending fails, ignore and proceed to close
+                    pass
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,
                     reason="Internal server error. Traceback included in previous frame.",
@@ -85,3 +107,18 @@ def _health_check(connection: _server.ServerConnection, request: _server.Request
         return connection.respond(http.HTTPStatus.OK, "OK\n")
     # Continue with the normal request handling.
     return None
+
+# helper: decode a base64 string to a PIL image
+def _decode_image(b64_str: str) -> Image.Image:
+    # support data URLs too: "data:image/png;base64,..."
+    if b64_str.startswith("data:"):
+        b64_str = b64_str.split(",", 1)[1]
+    raw = base64.b64decode(b64_str)
+    return Image.open(io.BytesIO(raw))
+
+# helper: decode to numpy array (uint8 RGB by default)
+def _decode_image_to_array(b64_str: str, mode: str | None = "RGB") -> np.ndarray:
+    img = _decode_image(b64_str)
+    if mode is not None:
+        img = img.convert(mode)
+    return np.array(img)

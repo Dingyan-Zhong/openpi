@@ -40,11 +40,13 @@ class C0PerturbInputs(transforms.DataTransformFn):
         # and two wrist views (left and right). If your dataset does not have a particular type
         # of image, e.g. wrist images, you can comment it out here and replace it with zeros like we do for the
         # right wrist image below.
-        base_image = _parse_image(data["observation/image"])
-        wrist_image = _parse_image(data["observation/wrist_image"])
+        #print("C0PerturbInputs data keys:", data.keys())
+        #print("C0PerturbInputs data image:", data["image"])
+        base_image = _parse_image(data["head_rgb"]) if isinstance(data["head_rgb"], np.ndarray) else np.array(data["head_rgb"]).astype(np.uint8)
+        wrist_image = _parse_image(data["wrist_rgb"]) if isinstance(data["wrist_rgb"], np.ndarray) else np.array(data["wrist_rgb"]).astype(np.uint8)
 
         # Create inputs dict. Do not change the keys in the dict below.
-        state = data["observation/state"]
+        state = np.array(data["state"])
         if self.state_angle_to_radians and "actions" in data:
             # Ad-hoc changes. Convert angles in state from degrees to radians. 
             # Only do this in training as the training data states are in angles.
